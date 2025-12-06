@@ -14,32 +14,62 @@ N-Audit Sentinel: For cloud-native, Kubernetes forensic operations (Cilium/K8s).
 
 The N-Audit architecture ensures that whether you are testing a legacy network or a microservices cluster, the audit trail is immutable, and the scope is enforced at the kernel level.
 
-graph TD
-    User((Security Professional))
-    
-    subgraph "Local / Network Operations"
-        NAudit["<b>N-Audit CLI</b><br/>Go Binary + Podman"]
-        Scope1[Iptables Scope Guard]
-        AI[Zero-Knowledge AI Proxy]
-    end
-    
-    subgraph "Cloud / Kubernetes Operations"
-        Sentinel["<b>N-Audit Sentinel</b><br/>K8s Pod (PID 1)"]
-        Cilium[Cilium Network Policy]
-        Seal[Cryptographic Seal]
+graph TB
+    %% Styles
+    classDef actor fill:#0d1117,stroke:#fff,stroke-width:2px,color:#fff;
+    classDef core fill:#00ADD8,stroke:#333,stroke-width:2px,color:#fff;
+    classDef cloud fill:#f05133,stroke:#333,stroke-width:2px,color:#fff;
+    classDef security fill:#2ea44f,stroke:#333,stroke-width:2px,color:#fff;
+    classDef output fill:#6e7681,stroke:#333,stroke-dasharray: 5 5,color:#fff;
+
+    User((👮 Security<br/>Professional)):::actor
+
+    subgraph "Control Plane"
+        Config[Scope Definition<br/>.md / .yaml]
+        Keys[AI API Keys]
     end
 
-    User -->|Interactive Session| NAudit
-    User -->|Attach PTY| Sentinel
+    subgraph "Execution Plane"
+        direction LR
+        subgraph "Local Assessment"
+            CLI[<b>N-Audit CLI</b><br/>Go Binary]:::core
+            Podman[Podman Engine]:::core
+        end
+        
+        subgraph "Cloud Forensics"
+            Sentinel[<b>N-Audit Sentinel</b><br/>K8s Pod PID 1]:::cloud
+            Cilium[Cilium eBPF]:::cloud
+        end
+    end
+
+    subgraph "Enforcement & Privacy Layer"
+        Firewall{Kernel<br/>Firewall}:::security
+        Sanitizer{AI Data<br/>Sanitizer}:::security
+        Signer{Crypto<br/>Signer}:::security
+    end
+
+    subgraph "Output Artifacts"
+        Logs[Forensic Logs<br/>SHA256 Signed]:::output
+        Report[HTML/PDF<br/>Reports]:::output
+    end
+
+    %% Flows
+    User -->|Interactive Cmd| CLI
+    User -->|kubectl attach| Sentinel
+    Config --> CLI & Sentinel
     
-    NAudit -->|Enforces| Scope1
-    NAudit -->|Sanitizes| AI
+    CLI --> Podman
+    Podman --> Firewall
     
-    Sentinel -->|Enforces| Cilium
-    Sentinel -->|Signs| Seal
+    Sentinel --> Cilium
+    Cilium --> Firewall
     
-    style NAudit fill:#00ADD8,stroke:#333,stroke-width:2px,color:white
-    style Sentinel fill:#f05133,stroke:#333,stroke-width:2px,color:white
+    CLI & Sentinel --> Sanitizer
+    Sanitizer -.->|Anonymized Prompt| CloudAI((☁️ LLM Cloud))
+    
+    CLI & Sentinel --> Signer
+    Signer --> Logs
+    Logs --> Report
 
 
 1. N-Audit CLI (Core)
@@ -60,25 +90,35 @@ Forensic Replay: Records sessions with SHA256 checksums, allowing for court-admi
 
 🏗️ Architecture
 
-flowchart LR
-    Tester[Tester Input] -->|Command| Parser[Command Parser]
-    
-    subgraph "N-Audit Core"
-        Parser -->|Check Scope| Validator{Scope Validator}
-        Validator -- Allowed --> PTY[PTY Session]
-        Validator -- Blocked --> Reject[Log Violation]
+flowchart TB
+    subgraph "User Space (Unprivileged)"
+        Input[User Input] --> Parser[Command Parser]
+        Parser --> Validator{Scope<br/>Validator}
         
-        PTY -->|Execution| Podman[Podman Container]
-        PTY -->|Stream| Logger[Forensic Logger]
+        Validator -- Allowed --> PTY[PTY Wrapper]
+        Validator -- Blocked --> AuditLog[Audit Violation]
         
-        subgraph "AI Layer"
-            Logger --> Sanitizer[Data Sanitizer]
-            Sanitizer --> AI_API[External AI Provider]
+        subgraph "AI Subsystem"
+            LogStream[Log Stream] --> PII_Filter[PII Sanitizer]
+            PII_Filter --> AI_Client[AI Client]
         end
     end
+
+    subgraph "Container Space (Isolated)"
+        PTY -->|Exec| Container[Podman Container<br/>(Kali Linux)]
+    end
+
+    subgraph "Kernel Space (Privileged)"
+        Container -->|Net Namespace| NetFilter[Netfilter/Iptables]
+        NetFilter -- "In Scope" --> Allow((Allow))
+        NetFilter -- "Out of Scope" --> Drop((Drop))
+    end
+
+    PTY -.-> LogStream
     
-    Podman -->|Network| Kernel[Linux Kernel / Iptables]
-    Kernel --> Target((Target Network))
+    style Validator fill:#2ea44f,color:white
+    style NetFilter fill:#bc8cff,color:white
+    style PII_Filter fill:#d2a8ff,color:black
 
 
 2. N-Audit Sentinel
@@ -99,23 +139,34 @@ Cryptographic Seal: At session termination, logs are hashed (SHA-256) and signed
 
 🏗️ Kubernetes Workflow
 
-flowchart LR
-  subgraph Kubernetes Cluster
-    Pod([N-Audit Sentinel Pod])
-    Vol[(hostPath Storage)]
-    API[(K8s API)]
-    DNS[(CoreDNS)]
-    CNP[[CiliumNetworkPolicy]]
-  end
-
-  User[Operator] -->|kubectl attach| Pod
-  Pod -->|Discover| API
-  Pod -->|Resolve| DNS
-  Pod -.->|Enforce Scope| CNP
-  Pod <-->|Audit Logs| Vol
-  
-  style Pod fill:#f05133,color:white
-  style CNP fill:#f9c74f,stroke:#333
+graph LR
+    subgraph "Forensic Pod Lifecycle"
+        Boot[PID 1 Start] --> Discovery[K8s Discovery]
+        Discovery --> TUI[Scope TUI]
+        
+        subgraph "Security Loop"
+            TUI --> PolicyGen[Policy Gen]
+            PolicyGen -->|Apply CRD| K8sAPI[K8s API]
+            K8sAPI -->|Enforce| eBPF[Cilium eBPF]
+            
+            eBPF --> Shell[Interactive Shell]
+            Shell -->|User Cmd| eBPF
+            Shell -->|Stream| Logger[Forensic Logger]
+        end
+        
+        subgraph "Teardown & Evidence"
+            Signal[Exit Signal] --> Hasher[SHA256 Hash]
+            Hasher --> Signer[Ed25519 Sign]
+            Signer --> Artifact[Signed Log]
+        end
+    end
+    
+    Shell --> Signal
+    Logger --> Hasher
+    
+    style Boot fill:#f05133,color:white
+    style eBPF fill:#f9c74f,stroke:#333
+    style Artifact fill:#2ea44f,color:white
 
 
 ⚔️ Comparison & Feature Parity
@@ -173,6 +224,7 @@ make build
 sudo ./n-audit session --scope config/scope.md --client "Acme Corp"
 
 
+
 For Kubernetes Forensics (Sentinel)
 
 # Deploy to cluster
@@ -180,6 +232,7 @@ kubectl apply -f deploy/manifests/
 
 # Attach to the forensic pod
 kubectl attach -it n-audit-sentinel -c sentinel
+
 
 
 📜 License
